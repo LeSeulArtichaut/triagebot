@@ -3,7 +3,7 @@
 use crate::{
     config::NominateConfig,
     github::{self, Event},
-    handlers::{Context, Handler},
+    handlers::{Context, GithubHandler},
     interactions::ErrorComment,
 };
 use futures::future::{BoxFuture, FutureExt};
@@ -12,7 +12,7 @@ use parser::command::{Command, Input};
 
 pub(super) struct NominateHandler;
 
-impl Handler for NominateHandler {
+impl GithubHandler for NominateHandler {
     type Input = NominateCommand;
     type Config = NominateConfig;
 
@@ -37,8 +37,8 @@ impl Handler for NominateHandler {
             }
         }
 
-        let mut input = Input::new(&body, &ctx.username);
-        match input.parse_command() {
+        let mut input = Input::new(&body, &ctx.gh_username);
+        match input.parse_github_command() {
             Command::Nominate(Ok(command)) => Ok(Some(command)),
             Command::Nominate(Err(err)) => {
                 return Err(format!(
@@ -95,7 +95,7 @@ async fn handle_input(
                 format!(
                     "This pull request is not beta-nominated, so it cannot be approved yet.\
                      Perhaps try to beta-nominate it by using `@{} beta-nominate <team>`?",
-                    ctx.username,
+                    ctx.gh_username,
                 ),
             );
             cmnt.post(&ctx.github).await?;

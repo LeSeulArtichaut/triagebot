@@ -3,7 +3,7 @@
 use crate::{
     config::GlacierConfig,
     github::Event,
-    handlers::{Context, Handler},
+    handlers::{Context, GithubHandler},
 };
 
 use futures::future::{BoxFuture, FutureExt};
@@ -14,7 +14,7 @@ use octocrab::models::Object;
 
 pub(super) struct GlacierHandler;
 
-impl Handler for GlacierHandler {
+impl GithubHandler for GlacierHandler {
     type Input = GlacierCommand;
     type Config = GlacierConfig;
 
@@ -31,8 +31,8 @@ impl Handler for GlacierHandler {
             return Ok(None);
         };
 
-        let mut input = Input::new(&body, &ctx.username);
-        match input.parse_command() {
+        let mut input = Input::new(&body, &ctx.gh_username);
+        match input.parse_github_command() {
             Command::Glacier(Ok(command)) => Ok(Some(command)),
             Command::Glacier(Err(err)) => {
                 return Err(format!(

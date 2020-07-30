@@ -200,6 +200,22 @@ impl User {
     }
 }
 
+pub async fn is_team_member_id(user_id: usize, client: &GithubClient) -> anyhow::Result<bool> {
+    let permission = crate::team_data::teams(client).await?;
+        let map = permission.teams;
+        let is_triager = map
+            .get("wg-triage")
+            .map_or(false, |w| w.members.iter().any(|g| g.github_id == user_id));
+        let is_pri_member = map
+            .get("wg-prioritization")
+            .map_or(false, |w| w.members.iter().any(|g| g.github_id == user_id));
+        Ok(
+            map["all"].members.iter().any(|g| g.github_id == user_id)
+                || is_triager
+                || is_pri_member,
+        )
+}
+
 pub async fn get_team(
     client: &GithubClient,
     team: &str,
@@ -314,6 +330,18 @@ impl IssueRepository {
 }
 
 impl Issue {
+    pub async fn get_issue(client: &GithubClient, repository: &str, issue: u64) -> anyhow::Result<Self> {
+        let url = format!(
+            "{}/repos/{}/issues/{}",
+            Repository::GITHUB_API_URL,
+            repository,
+            issue,
+        );
+
+        let issue = client.json(client.get(&url)).await?;
+        Ok(issue)
+    }
+
     pub fn zulip_topic_reference(&self) -> String {
         let repo = self.repository();
         if repo.organization == "rust-lang" {

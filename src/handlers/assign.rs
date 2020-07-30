@@ -14,7 +14,7 @@
 use crate::{
     config::AssignConfig,
     github::{self, Event, Selection},
-    handlers::{Context, Handler},
+    handlers::{Context, GithubHandler},
     interactions::EditIssueBody,
 };
 use anyhow::Context as _;
@@ -29,7 +29,7 @@ struct AssignData {
     user: Option<String>,
 }
 
-impl Handler for AssignmentHandler {
+impl GithubHandler for AssignmentHandler {
     type Input = AssignCommand;
     type Config = AssignConfig;
 
@@ -55,8 +55,8 @@ impl Handler for AssignmentHandler {
             }
         }
 
-        let mut input = Input::new(&body, &ctx.username);
-        match input.parse_command() {
+        let mut input = Input::new(&body, &ctx.gh_username);
+        match input.parse_github_command() {
             Command::Assign(Ok(command)) => Ok(Some(command)),
             Command::Assign(Err(err)) => {
                 return Err(format!(
@@ -186,7 +186,7 @@ async fn handle_input(ctx: &Context, event: &Event, cmd: AssignCommand) -> anyho
         Ok(()) => return Ok(()), // we are done
         Err(github::AssignmentError::InvalidAssignee) => {
             issue
-                .set_assignee(&ctx.github, &ctx.username)
+                .set_assignee(&ctx.github, &ctx.gh_username)
                 .await
                 .context("self-assignment failed")?;
             let cmt_body = format!(

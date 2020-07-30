@@ -1,7 +1,7 @@
 use crate::{
     config::PrioritizeConfig,
     github::{self, Event},
-    handlers::{Context, Handler},
+    handlers::{Context, GithubHandler},
 };
 use futures::future::{BoxFuture, FutureExt};
 use parser::command::prioritize::PrioritizeCommand;
@@ -9,7 +9,7 @@ use parser::command::{Command, Input};
 
 pub(super) struct PrioritizeHandler;
 
-impl Handler for PrioritizeHandler {
+impl GithubHandler for PrioritizeHandler {
     type Input = PrioritizeCommand;
     type Config = PrioritizeConfig;
 
@@ -26,8 +26,8 @@ impl Handler for PrioritizeHandler {
             return Ok(None);
         };
 
-        let mut input = Input::new(&body, &ctx.username);
-        match input.parse_command() {
+        let mut input = Input::new(&body, &ctx.gh_username);
+        match input.parse_github_command() {
             Command::Prioritize(Ok(PrioritizeCommand)) => Ok(Some(PrioritizeCommand)),
             _ => Ok(None),
         }

@@ -1,7 +1,7 @@
 use crate::{
     config::NotifyZulipConfig,
     github::{self, Event},
-    handlers::{Context, Handler},
+    handlers::{Context, GithubHandler},
 };
 use futures::future::{BoxFuture, FutureExt};
 
@@ -16,7 +16,7 @@ pub(super) enum NotificationType {
 
 pub(super) struct NotifyZulipHandler;
 
-impl Handler for NotifyZulipHandler {
+impl GithubHandler for NotifyZulipHandler {
     type Input = NotifyZulipInput;
     type Config = NotifyZulipConfig;
 

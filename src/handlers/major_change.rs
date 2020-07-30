@@ -1,7 +1,7 @@
 use crate::{
     config::MajorChangeConfig,
     github::{self, Event},
-    handlers::{Context, Handler},
+    handlers::{Context, GithubHandler},
     interactions::ErrorComment,
 };
 use anyhow::Context as _;
@@ -18,7 +18,7 @@ pub(super) enum Invocation {
 
 pub(super) struct MajorChangeHandler;
 
-impl Handler for MajorChangeHandler {
+impl GithubHandler for MajorChangeHandler {
     type Input = Invocation;
     type Config = MajorChangeConfig;
 
@@ -63,8 +63,8 @@ impl Handler for MajorChangeHandler {
             }
         }
 
-        let mut input = Input::new(&body, &ctx.username);
-        match input.parse_command() {
+        let mut input = Input::new(&body, &ctx.gh_username);
+        match input.parse_github_command() {
             Command::Second(Ok(SecondCommand)) => Ok(Some(Invocation::Second)),
             _ => Ok(None),
         }

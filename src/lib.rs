@@ -153,7 +153,7 @@ pub async fn webhook(
             return Ok(false);
         }
     };
-    if let Err(err) = handlers::handle(&ctx, &event).await {
+    if let Err(err) = handlers::handle_github(&ctx, &event).await {
         match err {
             HandlerError::Message(message) => {
                 if let Some(issue) = event.issue() {

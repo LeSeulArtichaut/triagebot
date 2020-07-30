@@ -1,5 +1,6 @@
 use crate::config::{self, ConfigurationError};
 use crate::github::{Event, GithubClient};
+use crate::zulip::Request;
 use futures::future::BoxFuture;
 use octocrab::Octocrab;
 use std::fmt;
@@ -25,15 +26,24 @@ impl fmt::Display for HandlerError {
 mod notification;
 mod rustc_commits;
 
-macro_rules! handlers {
-    ($($name:ident = $handler:expr,)*) => {
-        $(mod $name;)*
+mod assign;
+mod relabel;
+mod ping;
+mod nominate;
+mod prioritize;
+mod major_change;
+mod glacier;
+mod autolabel;
+mod notify_zulip;
+mod manage_notifs;
 
-        pub async fn handle(ctx: &Context, event: &Event) -> Result<(), HandlerError> {
+macro_rules! github_handlers {
+    ($($name:ident = $handler:expr,)*) => {
+        pub async fn handle_github(ctx: &Context, event: &Event) -> Result<(), HandlerError> {
             let config = config::get(&ctx.github, event.repo_name()).await;
 
             $(
-            if let Some(input) = Handler::parse_input(
+            if let Some(input) = GithubHandler::parse_input(
                 &$handler, ctx, event, config.as_ref().ok().and_then(|c| c.$name.as_ref()),
             ).map_err(HandlerError::Message)? {
                 let config = match &config {
@@ -49,7 +59,7 @@ macro_rules! handlers {
                     }
                 };
                 if let Some(config) = &config.$name {
-                    Handler::handle_input(&$handler, ctx, config, event, input).await.map_err(HandlerError::Other)?;
+                    GithubHandler::handle_input(&$handler, ctx, config, event, input).await.map_err(HandlerError::Other)?;
                 } else {
                     return Err(HandlerError::Message(format!(
                         "The feature `{}` is not enabled in this repository.\n\
@@ -73,7 +83,23 @@ macro_rules! handlers {
     }
 }
 
-handlers! {
+macro_rules! zulip_handlers {
+    ($($name:ident = $handler:expr,)*) => {
+        pub async fn handle_zulip(ctx: &Context, req: &Request) -> Result<(), HandlerError> {
+            $(
+            if let Some(input) = ZulipHandler::parse_input(
+                &$handler, ctx, req, 
+            ).map_err(HandlerError::Message)? {
+                ZulipHandler::handle_input(&$handler, ctx, req, input).await.map_err(HandlerError::Other)?;
+            }
+            )*
+
+            Ok(())
+        }
+    }
+}
+
+github_handlers! {
     assign = assign::AssignmentHandler,
     relabel = relabel::RelabelHandler,
     ping = ping::PingHandler,
@@ -86,14 +112,20 @@ handlers! {
     notify_zulip = notify_zulip::NotifyZulipHandler,
 }
 
+zulip_handlers! {
+    relabel = relabel::RelabelHandler,
+    manage_notifs = manage_notifs::NotificationHandler,
+}
+
 pub struct Context {
     pub github: GithubClient,
     pub db: DbClient,
-    pub username: String,
+    pub gh_username: String,
+    pub zulip_username: String,
     pub octocrab: Octocrab,
 }
 
-pub trait Handler: Sync + Send {
+pub trait GithubHandler: Sync + Send {
     type Input;
     type Config;
 
@@ -109,6 +141,23 @@ pub trait Handler: Sync + Send {
         ctx: &'a Context,
         config: &'a Self::Config,
         event: &'a Event,
+        input: Self::Input,
+    ) -> BoxFuture<'a, anyhow::Result<()>>;
+}
+
+pub trait ZulipHandler: Sync + Send {
+    type Input;
+    
+    fn parse_input(
+        &self,
+        ctx: &Context,
+        req: &Request,
+    ) -> Result<Option<Self::Input>, String>;
+
+    fn handle_input<'a>(
+        &self,
+        ctx: &'a Context,
+        req: &'a Request,
         input: Self::Input,
     ) -> BoxFuture<'a, anyhow::Result<()>>;
 }

@@ -28,14 +28,53 @@ use crate::token::{Token, Tokenizer};
 #[cfg(test)]
 use std::error::Error as _;
 use std::fmt;
+use std::str::FromStr;
 
 #[derive(Debug)]
-pub struct RelabelCommand(pub Vec<LabelDelta>);
+pub struct RelabelCommand(pub Vec<LabelDelta>, pub Option<IssueReference>);
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum LabelDelta {
     Add(Label),
     Remove(Label),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct IssueReference {
+    pub repository: String,
+    pub number: u64,
+}
+
+impl FromStr for IssueReference {
+    type Err = ParseError;
+
+    fn from_str(issue_ref: &str) -> Result<Self, ParseError> {
+        let mut split = issue_ref.split('#');
+        let (repo, number) = (split.next(), split.next());
+        if repo.is_none() || number.is_none() || number.unwrap().is_empty() {
+            return Err(ParseError::ExpectedIssueReference);
+        }
+
+        let number = number.unwrap()
+            .parse()
+            .map_err(|_| ParseError::ExpectedIssueReference)?;
+        let repository = match repo {
+            Some("") => String::from("rust-lang/rust"),
+            Some(repo) => {
+                if !repo.contains('/') {
+                    format!("rust-lang/{}", repo)
+                } else {
+                    repo.to_owned()
+                }
+            },
+            None => unreachable!(),
+        };
+        
+        Ok(Self {
+            repository,
+            number,
+        })
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -45,6 +84,7 @@ pub struct Label(String);
 pub enum ParseError {
     EmptyLabel,
     ExpectedLabelDelta,
+    ExpectedIssueReference,
     MisleadingTo,
     NoSeparator,
 }
@@ -56,6 +96,7 @@ impl fmt::Display for ParseError {
         match self {
             ParseError::EmptyLabel => write!(f, "empty label"),
             ParseError::ExpectedLabelDelta => write!(f, "a label delta"),
+            ParseError::ExpectedIssueReference => write!(f, "an issue reference"),
             ParseError::MisleadingTo => write!(f, "forbidden `to`, use `+to`"),
             ParseError::NoSeparator => write!(f, "must have `:` or `to` as label starter"),
         }
@@ -137,6 +178,18 @@ impl RelabelCommand {
         } else {
             return Ok(None);
         }
+        let mut issue = None;
+        if let Some(Token::Word("of")) = toks.peek_token()? {
+            toks.next_token()?;
+            if let Some(Token::Word(issue_str)) = toks.peek_token()? {
+                match issue_str.parse() {
+                    Ok(issue_ref) => issue = Some(issue_ref),
+                    Err(err) => return Err(toks.error(err)),
+                }
+            } else {
+                return Err(toks.error(ParseError::ExpectedIssueReference));
+            }
+        }
         if let Some(Token::Colon) = toks.peek_token()? {
             toks.next_token()?;
         } else if let Some(Token::Word("to")) = toks.peek_token()? {
@@ -171,22 +224,31 @@ impl RelabelCommand {
             {
                 toks.next_token()?;
                 *input = toks;
-                return Ok(Some(RelabelCommand(deltas)));
+                return Ok(Some(RelabelCommand(deltas, issue)));
             }
         }
     }
 }
 
 #[cfg(test)]
-fn parse<'a>(input: &'a str) -> Result<Option<Vec<LabelDelta>>, Error<'a>> {
+fn parse_no_issue<'a>(input: &'a str) -> Result<Option<Vec<LabelDelta>>, Error<'a>> {
     let mut toks = Tokenizer::new(input);
-    Ok(RelabelCommand::parse(&mut toks)?.map(|c| c.0))
+    Ok(RelabelCommand::parse(&mut toks)?.map(|c| {
+        assert_eq!(c.1, None);
+        c.0
+    }))
+}
+
+#[cfg(test)]
+fn parse_issue_ref<'a>(input: &'a str) -> Result<Option<IssueReference>, Error<'a>> {
+    let mut toks = Tokenizer::new(input);
+    Ok(RelabelCommand::parse(&mut toks)?.and_then(|c| c.1))
 }
 
 #[test]
 fn parse_simple() {
     assert_eq!(
-        parse("modify labels: +T-compiler -T-lang bug."),
+        parse_no_issue("modify labels: +T-compiler -T-lang bug."),
         Ok(Some(vec![
             LabelDelta::Add(Label("T-compiler".into())),
             LabelDelta::Remove(Label("T-lang".into())),
@@ -198,7 +260,7 @@ fn parse_simple() {
 #[test]
 fn parse_leading_to_label() {
     assert_eq!(
-        parse("modify labels: to -T-lang")
+        parse_no_issue("modify labels: to -T-lang")
             .unwrap_err()
             .source()
             .unwrap()
@@ -210,7 +272,7 @@ fn parse_leading_to_label() {
 #[test]
 fn parse_no_label_paragraph() {
     assert_eq!(
-        parse("modify labels yep; Labels do in fact exist but this is not a label paragraph."),
+        parse_no_issue("modify labels yep; Labels do in fact exist but this is not a label paragraph."),
         Ok(Some(vec![LabelDelta::Add(Label("yep".into())),]))
     );
 }
@@ -218,7 +280,7 @@ fn parse_no_label_paragraph() {
 #[test]
 fn parse_no_dot() {
     assert_eq!(
-        parse("modify labels to +T-compiler -T-lang bug"),
+        parse_no_issue("modify labels to +T-compiler -T-lang bug"),
         Ok(Some(vec![
             LabelDelta::Add(Label("T-compiler".into())),
             LabelDelta::Remove(Label("T-lang".into())),
@@ -230,11 +292,22 @@ fn parse_no_dot() {
 #[test]
 fn parse_to_colon() {
     assert_eq!(
-        parse("modify labels to: +T-compiler -T-lang bug"),
+        parse_no_issue("modify labels to: +T-compiler -T-lang bug"),
         Ok(Some(vec![
             LabelDelta::Add(Label("T-compiler".into())),
             LabelDelta::Remove(Label("T-lang".into())),
             LabelDelta::Add(Label("bug".into())),
         ]))
     );
+}
+
+#[test]
+fn parse_with_issue_ref() {
+    assert_eq!(
+        parse_issue_ref("modify labels of triagebot#1 +bug"),
+        Ok(Some(IssueReference {
+            repository: String::from("rust-lang/triagebot"),
+            number: 1,
+        }))
+    )
 }

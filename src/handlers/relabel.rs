@@ -9,10 +9,12 @@
 //! notification noise.
 
 use crate::{
-    config::RelabelConfig,
-    github::{self, Event, GithubClient},
-    handlers::{Context, Handler},
+    zulip,
+    config::{self, RelabelConfig},
+    github::{self, Event, Issue, GithubClient, is_team_member_id},
+    handlers::{Context, GithubHandler, ZulipHandler},
     interactions::ErrorComment,
+    zulip::Request,
 };
 use futures::future::{BoxFuture, FutureExt};
 use parser::command::relabel::{LabelDelta, RelabelCommand};
@@ -20,7 +22,7 @@ use parser::command::{Command, Input};
 
 pub(super) struct RelabelHandler;
 
-impl Handler for RelabelHandler {
+impl GithubHandler for RelabelHandler {
     type Input = RelabelCommand;
     type Config = RelabelConfig;
 
@@ -45,8 +47,8 @@ impl Handler for RelabelHandler {
             }
         }
 
-        let mut input = Input::new(&body, &ctx.username);
-        match input.parse_command() {
+        let mut input = Input::new(&body, &ctx.gh_username);
+        match input.parse_github_command() {
             Command::Relabel(Ok(command)) => Ok(Some(command)),
             Command::Relabel(Err(err)) => {
                 return Err(format!(
@@ -66,21 +68,88 @@ impl Handler for RelabelHandler {
         event: &'a Event,
         input: RelabelCommand,
     ) -> BoxFuture<'a, anyhow::Result<()>> {
-        handle_input(ctx, config, event, input).boxed()
+        handle_github_input(ctx, config, event, input).boxed()
     }
 }
 
-async fn handle_input(
+impl ZulipHandler for RelabelHandler {
+    type Input = RelabelCommand;
+
+    fn parse_input(&self, ctx: &Context, req: &Request) -> Result<Option<Self::Input>, String> {
+        let mut input = Input::new(&req.data, &ctx.zulip_username);
+        match input.parse_zulip_command(req.message.type_ == "private") {
+            Command::Relabel(Ok(command)) => Ok(Some(command)),
+            Command::Relabel(Err(err)) => {
+                return Err(format!("Parsing label command failed: {}", err));
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn handle_input<'a>(&self, ctx: &'a Context, req: &'a Request, input: Self::Input) -> BoxFuture<'a, anyhow::Result<()>> {
+        handle_zulip_input(ctx, req, input).boxed()
+    }
+}
+
+async fn handle_github_input(
     ctx: &Context,
     config: &RelabelConfig,
     event: &Event,
     input: RelabelCommand,
 ) -> anyhow::Result<()> {
-    let mut issue_labels = event.issue().unwrap().labels().to_owned();
+    let membership = is_member(event.user(), &ctx.github).await;
+    handle_input(&ctx, &config, &event.issue().unwrap(), membership, input).await
+}
+
+async fn handle_zulip_input(
+    ctx: &Context,
+    req: &Request,
+    input: RelabelCommand,
+) -> anyhow::Result<()> {
+    let issue_ref = match &input.1 {
+        Some(issue_ref) => issue_ref,
+        None => {
+            req.message.reply(&ctx.github.raw(), "No issue reference given").await?;
+            return Ok(());
+        }
+    };
+    let issue = Issue::get_issue(&ctx.github, &issue_ref.repository, issue_ref.number).await?;
+    let repo_config = config::get(&ctx.github, &issue_ref.repository).await?;
+    let config = repo_config
+        .as_ref()
+        .relabel
+        .as_ref();
+    let config = match config {
+        Some(c) => c,
+        None => {
+            req.message.reply(
+                &ctx.github.raw(),
+                &format!("The feature `relabel` is not enabled in the `{}` repository.", &issue_ref.repository),
+            ).await?;
+            return Ok(());
+        }
+    };
+    let github_id = zulip::to_github_id(&ctx.github, req.message.sender_id as usize).await?;
+    let membership = match github_id {
+        Some(id) => is_member_by_id(id, &ctx.github).await,
+        None => TeamMembership::Unknown,
+    };
+
+    handle_input(&ctx, &config, &issue, membership, input).await
+}
+
+async fn handle_input(
+    ctx: &Context,
+    config: &RelabelConfig,
+    issue: &Issue,
+    membership: TeamMembership,
+    input: RelabelCommand,
+) -> anyhow::Result<()> {
+    let mut issue_labels = issue.labels().to_owned();
     let mut changed = false;
     for delta in &input.0 {
         let name = delta.label().as_str();
-        let err = match check_filter(name, config, is_member(&event.user(), &ctx.github).await) {
+        let err = match check_filter(name, config, membership) {
             Ok(CheckFilterResult::Allow) => None,
             Ok(CheckFilterResult::Deny) => Some(format!(
                 "Label {} can only be set by Rust team members",
@@ -94,7 +163,7 @@ async fn handle_input(
             Err(err) => Some(err),
         };
         if let Some(msg) = err {
-            let cmnt = ErrorComment::new(&event.issue().unwrap(), msg);
+            let cmnt = ErrorComment::new(&issue, msg);
             cmnt.post(&ctx.github).await?;
             return Ok(());
         }
@@ -117,17 +186,13 @@ async fn handle_input(
     }
 
     if changed {
-        event
-            .issue()
-            .unwrap()
-            .set_labels(&ctx.github, issue_labels)
-            .await?;
+        issue.set_labels(&ctx.github, issue_labels).await?;
     }
 
     Ok(())
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 enum TeamMembership {
     Member,
     Outsider,
@@ -136,6 +201,17 @@ enum TeamMembership {
 
 async fn is_member(user: &github::User, client: &GithubClient) -> TeamMembership {
     match user.is_team_member(client).await {
+        Ok(true) => TeamMembership::Member,
+        Ok(false) => TeamMembership::Outsider,
+        Err(err) => {
+            eprintln!("failed to check team membership: {:?}", err);
+            TeamMembership::Unknown
+        }
+    }
+}
+
+async fn is_member_by_id(user_id: i64, client: &GithubClient) -> TeamMembership {
+    match is_team_member_id(user_id as usize, &client).await {
         Ok(true) => TeamMembership::Member,
         Ok(false) => TeamMembership::Outsider,
         Err(err) => {

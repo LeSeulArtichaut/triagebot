@@ -1,7 +1,7 @@
 use crate::{
     config::AutolabelConfig,
     github::{self, Event, Label},
-    handlers::{Context, Handler},
+    handlers::{Context, GithubHandler},
 };
 use futures::future::{BoxFuture, FutureExt};
 pub(super) struct AutolabelInput {
@@ -10,7 +10,7 @@ pub(super) struct AutolabelInput {
 
 pub(super) struct AutolabelHandler;
 
-impl Handler for AutolabelHandler {
+impl GithubHandler for AutolabelHandler {
     type Input = AutolabelInput;
     type Config = AutolabelConfig;
 

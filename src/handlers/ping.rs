@@ -7,7 +7,7 @@
 use crate::{
     config::PingConfig,
     github::{self, Event},
-    handlers::{Context, Handler},
+    handlers::{Context, GithubHandler},
     interactions::ErrorComment,
 };
 use futures::future::{BoxFuture, FutureExt};
@@ -16,7 +16,7 @@ use parser::command::{Command, Input};
 
 pub(super) struct PingHandler;
 
-impl Handler for PingHandler {
+impl GithubHandler for PingHandler {
     type Input = PingCommand;
     type Config = PingConfig;
 
@@ -50,8 +50,8 @@ impl Handler for PingHandler {
             }
         }
 
-        let mut input = Input::new(&body, &ctx.username);
-        match input.parse_command() {
+        let mut input = Input::new(&body, &ctx.gh_username);
+        match input.parse_github_command() {
             Command::Ping(Ok(command)) => Ok(Some(command)),
             Command::Ping(Err(err)) => {
                 return Err(format!(

@@ -9,6 +9,7 @@ pub mod ping;
 pub mod prioritize;
 pub mod relabel;
 pub mod second;
+pub mod manage_notifs;
 
 pub fn find_commmand_start(input: &str, bot: &str) -> Option<usize> {
     input.find(&format!("@{}", bot))
@@ -23,6 +24,7 @@ pub enum Command<'a> {
     Prioritize(Result<prioritize::PrioritizeCommand, Error<'a>>),
     Second(Result<second::SecondCommand, Error<'a>>),
     Glacier(Result<glacier::GlacierCommand, Error<'a>>),
+    HandleNotifs(Result<manage_notifs::NotifCommand, Error<'a>>),
     None,
 }
 
@@ -64,7 +66,7 @@ impl<'a> Input<'a> {
         }
     }
 
-    pub fn parse_command(&mut self) -> Command<'a> {
+    pub fn parse_github_command(&mut self) -> Command<'a> {
         let start = match find_commmand_start(&self.all[self.parsed..], self.bot) {
             Some(pos) => pos,
             None => return Command::None,
@@ -75,7 +77,7 @@ impl<'a> Input<'a> {
             tok.next_token().unwrap(),
             Some(Token::Word(&format!("@{}", self.bot)))
         );
-        log::info!("identified potential command");
+        log::info!("identified potential GitHub command");
 
         let mut success = vec![];
 
@@ -145,6 +147,72 @@ impl<'a> Input<'a> {
             None => Command::None,
         }
     }
+
+    pub fn parse_zulip_command(&mut self, private: bool) -> Command<'a> {
+        let mut prefix = false;
+        let mut start = None;
+        if private {
+            start = Some(0);
+        }
+        if let Some(pos) = find_commmand_start(
+            &self.all[self.parsed..],
+            &format!("**{}**", &self.bot),
+        ) {
+            prefix = true;
+            start = Some(pos);
+        }
+        if start.is_none() {
+            return Command::None;
+        }
+        let start = start.unwrap();
+
+        self.parsed += start;
+        let mut tok = Tokenizer::new(&self.all[self.parsed..]);
+        if prefix {
+            assert_eq!(
+                tok.next_token().unwrap(),
+                Some(Token::Word(&format!("@**{}**", self.bot)))
+            );
+        }
+        log::info!("identified potential Zulip command");
+
+        let mut success: Vec<(Tokenizer, Command)> = vec![];
+        let original_tokenizer = tok.clone();
+
+        success.extend(parse_single_command(
+            relabel::RelabelCommand::parse,
+            Command::Relabel,
+            &original_tokenizer,
+        ));
+
+        if success.len() > 1 {
+            panic!(
+                "succeeded parsing {:?} to multiple commands: {:?}",
+                &self.all[self.parsed..],
+                success
+            );
+        }
+
+        if self
+            .code
+            .overlaps_code((self.parsed)..(self.parsed + tok.position()))
+            .is_some()
+        {
+            log::info!("command overlaps code; code: {:?}", self.code);
+            return Command::None;
+        }
+
+        match success.pop() {
+            Some((mut tok, c)) => {
+                // if we errored out while parsing the command do not move the input forwards
+                if c.is_ok() {
+                    self.parsed += tok.position();
+                }
+                c
+            }
+            None => Command::None,
+        }
+    }
 }
 
 impl<'a> Command<'a> {
@@ -157,6 +225,7 @@ impl<'a> Command<'a> {
             Command::Prioritize(r) => r.is_ok(),
             Command::Second(r) => r.is_ok(),
             Command::Glacier(r) => r.is_ok(),
+            Command::HandleNotifs(r) => r.is_ok(),
             Command::None => true,
         }
     }
@@ -178,14 +247,14 @@ fn errors_outside_command_are_fine() {
     let input =
         "haha\" unterminated quotes @bot modify labels: +bug. Terminating after the command";
     let mut input = Input::new(input, "bot");
-    assert!(input.parse_command().is_ok());
+    assert!(input.parse_github_command().is_ok());
 }
 
 #[test]
 fn code_1() {
     let input = "`@bot modify labels: +bug.`";
     let mut input = Input::new(input, "bot");
-    assert!(input.parse_command().is_none());
+    assert!(input.parse_github_command().is_none());
 }
 
 #[test]
@@ -194,14 +263,14 @@ fn code_2() {
     @bot modify labels: +bug.
     ```";
     let mut input = Input::new(input, "bot");
-    assert!(input.parse_command().is_none());
+    assert!(input.parse_github_command().is_none());
 }
 
 #[test]
 fn move_input_along() {
     let input = "@bot modify labels: +bug. Afterwards, delete the world.";
     let mut input = Input::new(input, "bot");
-    let parsed = input.parse_command();
+    let parsed = input.parse_github_command();
     assert!(parsed.is_ok());
     assert_eq!(&input.all[input.parsed..], " Afterwards, delete the world.");
 }
@@ -210,7 +279,7 @@ fn move_input_along() {
 fn move_input_along_1() {
     let input = "@bot modify labels\": +bug. Afterwards, delete the world.";
     let mut input = Input::new(input, "bot");
-    assert!(input.parse_command().is_err());
+    assert!(input.parse_github_command().is_err());
     // don't move input along if parsing the command fails
     assert_eq!(input.parsed, 0);
 }
